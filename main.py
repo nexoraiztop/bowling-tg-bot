@@ -1,18 +1,61 @@
-import logging
-import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from telegram.constants import ParseMode
+"""
+Telegram бот: слот-машина 🎰 с джекпотом 777 и мини-игрой в боулинг.
 
-from config import BOT_TOKEN, PRIZE_LEVELS, PIN_RANGES_2_BUTTONS, PIN_RANGES_3_BUTTONS, MAX_PINS
+Установка:
+    pip install aiogram
+
+Запуск:
+    python main.py
+
+Токен бота берётся из переменной окружения BOT_TOKEN
+"""
+
+import asyncio
+import logging
+import os
+import random
+import uuid
+from datetime import datetime
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+from aiogram.filters import Command
+
+# Database imports
 from database import SessionLocal, User, GameSession
 
-# Logging setup
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# ==== НАСТРОЙКИ ====
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Сохраняем активные игры
+active_games = {}
+
+# Pin ranges для разных уровней
+PIN_RANGES_2_BUTTONS = {
+    0: (0, 3),
+    1: (3, 6),
+}
+
+PIN_RANGES_3_BUTTONS = {
+    0: (0, 2),
+    1: (2, 4),
+    2: (4, 6),
+}
+
+PRIZE_LEVELS = [15, 40, 75, 100, "NFT"]
 
 
 def get_pin_ranges(prize_level):
@@ -23,11 +66,17 @@ def get_pin_ranges(prize_level):
         return PIN_RANGES_2_BUTTONS
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def mention(user_id: int, name: str) -> str:
+    """HTML-ссылка на пользователя"""
+    return f'<a href="tg://user?id={user_id}">{name}</a>'
+
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
     """Start command"""
     db = SessionLocal()
-    user_id = update.effective_user.id
-    username = update.effective_user.username or update.effective_user.first_name
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.first_name
     
     # Get or create user
     user = db.query(User).filter(User.user_id == user_id).first()
@@ -47,22 +96,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Ваш текущий приз: <b>{user.current_prize}</b>"
     )
     
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+    await message.reply(welcome_text)
     db.close()
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle any message with 🎰"""
-    if "🎰" not in update.message.text:
-        return
-    
+@dp.message(F.text.contains("🎰"))
+async def handle_slot_spin(message: Message):
+    """Handle slot machine spin"""
     db = SessionLocal()
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     
     # Get or create user
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
-        user = User(user_id=user_id, username=update.effective_user.username, current_prize="15", prize_level=0)
+        user = User(
+            user_id=user_id,
+            username=message.from_user.username or message.from_user.first_name,
+            current_prize="15",
+            prize_level=0
+        )
         db.add(user)
         db.commit()
     
@@ -77,6 +129,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         pin_ranges = get_pin_ranges(prize_level)
         
         # Create game session
+        game_id = uuid.uuid4().hex[:12]
         game_session = GameSession(
             user_id=user_id,
             prize_level=prize_level,
@@ -85,56 +138,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         db.add(game_session)
         db.commit()
         
-        context.user_data['game_session_id'] = game_session.id
-        context.user_data['current_prize'] = user.current_prize
-        context.user_data['prize_level'] = prize_level
+        active_games[game_id] = {
+            "session_id": game_session.id,
+            "user_id": user_id,
+            "current_prize": user.current_prize,
+            "prize_level": prize_level,
+        }
         
         # Create buttons for pinfall ranges
         keyboard = []
         for range_id, (min_pins, max_pins) in pin_ranges.items():
             button_text = f"🎳 {min_pins}-{max_pins}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"range_{range_id}")])
+            keyboard.append([InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"range_{game_id}_{range_id}"
+            )])
         
         message_text = (
             f"🎰 {slot_display} 🎰\n\n"
-            f"🎉 777! 🎉\n\n"
+            f"🎉 <b>777! ДЖЕКПОТ!</b> 🎉\n\n"
             f"🎳 Мини-игра в боулинг!\n"
             f"💰 Приз на кону: <b>{user.current_prize}</b>\n\n"
             f"Выберите диапазон кедлей:"
         )
         
-        await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+        await message.reply(message_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
-        # No jackpot
+        # No jackpot - just show the spin
         message_text = f"🎰 {slot_display} 🎰"
-        await update.message.reply_text(message_text)
+        await message.reply(message_text)
     
     db.close()
 
 
-async def select_range(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@dp.callback_query(F.data.startswith("range_"))
+async def handle_range_selection(callback: CallbackQuery):
     """Handle range selection and throw pins"""
-    query = update.callback_query
-    await query.answer()
+    await callback.answer()
     
-    # Extract range id from callback data
-    range_id = int(query.data.split("_")[1])
+    # Parse callback data
+    parts = callback.data.split("_")
+    game_id = parts[1]
+    range_id = int(parts[2])
+    
+    game = active_games.get(game_id)
+    if not game:
+        await callback.message.edit_text("❌ Игра больше недоступна")
+        return
     
     db = SessionLocal()
-    user_id = update.effective_user.id
+    user_id = game["user_id"]
     user = db.query(User).filter(User.user_id == user_id).first()
     
-    pin_ranges = get_pin_ranges(context.user_data['prize_level'])
+    pin_ranges = get_pin_ranges(game["prize_level"])
     min_pins, max_pins = pin_ranges[range_id]
     
     # Generate random pinfall (0-6)
-    actual_pins = random.randint(0, MAX_PINS)
+    actual_pins = random.randint(0, 6)
     
     # Check if user guessed correctly
     won = min_pins <= actual_pins < max_pins
     
     # Update game session
-    game_session_id = context.user_data['game_session_id']
+    game_session_id = game["session_id"]
     game_session = db.query(GameSession).filter(GameSession.id == game_session_id).first()
     game_session.pinfall_range = f"{min_pins}-{max_pins}"
     game_session.actual_pins = actual_pins
@@ -146,13 +212,13 @@ async def select_range(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if won:
         user.total_wins += 1
         # Повышаем приз
-        if context.user_data['prize_level'] < len(PRIZE_LEVELS) - 1:
-            new_level = context.user_data['prize_level'] + 1
+        if game["prize_level"] < len(PRIZE_LEVELS) - 1:
+            new_level = game["prize_level"] + 1
             new_prize = str(PRIZE_LEVELS[new_level])
             level_message = f"✨ Приз повышен до <b>{new_prize}</b>!"
         else:
             # Уже на максимум (NFT)
-            new_level = context.user_data['prize_level']
+            new_level = game["prize_level"]
             new_prize = str(PRIZE_LEVELS[new_level])
             level_message = f"🏆 Максимум - <b>NFT</b>!"
     else:
@@ -163,6 +229,7 @@ async def select_range(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     user.prize_level = new_level
     user.current_prize = new_prize
+    user.last_played = datetime.utcnow()
     db.commit()
     
     # Create result message with emojis
@@ -175,24 +242,21 @@ async def select_range(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"Выбор: <b>{min_pins}-{max_pins}</b>\n"
         f"Результат: {pins_emoji} <b>({actual_pins})</b>\n\n"
         f"{level_message}\n"
-        f"💰 Приз: <b>{new_prize}</b>"
+        f"💰 Приз: <b>{new_prize}</b>\n"
+        f"Всего побед: {user.total_wins}/{user.total_games}"
     )
     
-    await query.edit_message_text(message_text, parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(message_text)
+    
+    # Clean up
+    active_games.pop(game_id, None)
     db.close()
 
 
-def main() -> None:
+async def main():
     """Start the bot"""
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(select_range, pattern="^range_"))
-    
-    # Run the bot
-    application.run_polling()
+    await dp.start_polling(bot)
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    asyncio.run(main())
