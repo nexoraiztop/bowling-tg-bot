@@ -1,13 +1,6 @@
 """
 Telegram бот: слот-машина 🎰 с джекпотом 777 и мини-игрой в боулинг.
-
-Установка:
-    pip install aiogram
-
-Запуск:
-    python main.py
-
-Токен бота берётся из переменной окружения BOT_TOKEN
+Пользователь выбивает 777 на реальной слот-машине Telegram, затем играет в боулинг.
 """
 
 import asyncio
@@ -25,10 +18,10 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    Dice,
 )
 from aiogram.filters import Command
 
-# Database imports
 from database import SessionLocal, User, GameSession
 
 # ==== НАСТРОЙКИ ====
@@ -56,6 +49,9 @@ PIN_RANGES_3_BUTTONS = {
 }
 
 PRIZE_LEVELS = [15, 40, 75, 100, "NFT"]
+
+# Значение dice для 777 на слот-машине
+JACKPOT_VALUE = 64
 
 
 def get_pin_ranges(prize_level):
@@ -88,21 +84,33 @@ async def cmd_start(message: Message):
     welcome_text = (
         f"🎰 Добро пожаловать в Bowling Slot Bot!\n\n"
         f"Правила игры:\n"
-        f"1️⃣ Напишите сообщение с эмодзи 🎰\n"
-        f"2️⃣ Если выпадет 777 - запускается мини-игра в боулинг!\n"
+        f"1️⃣ Отправьте эмодзи 🎰 боту\n"
+        f"2️⃣ Если выбьете 777 - запускается мини-игра в боулинг!\n"
         f"3️⃣ Выберите диапазон кедлей и попробуйте угадать\n"
         f"4️⃣ Если попадете - приз повышается, если нет - приз сгорает!\n\n"
         f"💰 Призы: 15 → 40 → 75 → 100 → NFT\n\n"
-        f"Ваш текущий приз: <b>{user.current_prize}</b>"
+        f"Ваш текущий приз: <b>{user.current_prize}</b>\n\n"
+        f"👉 Отправьте /spin или просто 🎰 чтобы крутить слот!"
     )
     
     await message.reply(welcome_text)
     db.close()
 
 
-@dp.message(F.text.contains("🎰"))
-async def handle_slot_spin(message: Message):
-    """Handle slot machine spin"""
+@dp.message(Command("spin"))
+async def cmd_spin(message: Message):
+    """Send dice emoji to spin slots"""
+    await message.reply_dice(emoji="🎰")
+
+
+@dp.message(F.dice)
+async def handle_dice(message: Message):
+    """Handle dice result"""
+    if message.dice.emoji != "🎰":
+        return
+    
+    dice_value = message.dice.value
+    
     db = SessionLocal()
     user_id = message.from_user.id
     
@@ -118,12 +126,8 @@ async def handle_slot_spin(message: Message):
         db.add(user)
         db.commit()
     
-    # Spin the slots - 3 random numbers
-    slot_results = [random.randint(1, 9) for _ in range(3)]
-    slot_display = " ".join([str(x) for x in slot_results])
-    
-    # Check if 777
-    if slot_results == [7, 7, 7]:
+    # Check if jackpot (777)
+    if dice_value == JACKPOT_VALUE:
         # Start bowling game
         prize_level = user.prize_level
         pin_ranges = get_pin_ranges(prize_level)
@@ -155,18 +159,17 @@ async def handle_slot_spin(message: Message):
             )])
         
         message_text = (
-            f"🎰 {slot_display} 🎰\n\n"
-            f"🎉 <b>777! ДЖЕКПОТ!</b> 🎉\n\n"
-            f"🎳 Мини-игра в боулинг!\n"
+            f"🎉 <b>ДЖЕКПОТ! 777!</b> 🎉\n\n"
+            f"{mention(user_id, message.from_user.full_name)}, поздравляю! 🎊\n\n"
+            f"🎳 Началась мини-игра в боулинг!\n"
             f"💰 Приз на кону: <b>{user.current_prize}</b>\n\n"
             f"Выберите диапазон кедлей:"
         )
         
         await message.reply(message_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
-        # No jackpot - just show the spin
-        message_text = f"🎰 {slot_display} 🎰"
-        await message.reply(message_text)
+        # No jackpot
+        pass
     
     db.close()
 
