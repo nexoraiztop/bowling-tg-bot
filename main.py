@@ -1,7 +1,7 @@
 import logging
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
 
 from config import BOT_TOKEN, PRIZE_LEVELS, PIN_RANGES_2_BUTTONS, PIN_RANGES_3_BUTTONS, MAX_PINS
@@ -13,9 +13,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Game states
-SELECT_RANGE = range(1)
 
 
 def get_pin_ranges(prize_level):
@@ -42,7 +39,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_text = (
         f"🎰 Добро пожаловать в Bowling Slot Bot!\n\n"
         f"Правила игры:\n"
-        f"1️⃣ Напишите сообщение с эмодзи 🎰🎰\n"
+        f"1️⃣ Напишите сообщение с эмодзи 🎰\n"
         f"2️⃣ Если выпадет 777 - запускается мини-игра в боулинг!\n"
         f"3️⃣ Выберите диапазон кедлей и попробуйте угадать\n"
         f"4️⃣ Если попадете - приз повышается, если нет - приз сгорает!\n\n"
@@ -54,15 +51,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db.close()
 
 
-async def handle_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle slot machine 🎰🎰"""
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle any message with 🎰"""
     if "🎰" not in update.message.text:
-        return
-    
-    # Count 🎰 emojis
-    slot_count = update.message.text.count("🎰")
-    
-    if slot_count < 2:
         return
     
     db = SessionLocal()
@@ -71,11 +62,11 @@ async def handle_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Get or create user
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
-        user = User(user_id=user_id, username=update.effective_user.username)
+        user = User(user_id=user_id, username=update.effective_user.username, current_prize="15", prize_level=0)
         db.add(user)
         db.commit()
     
-    # Spin the slots
+    # Spin the slots - 3 random numbers
     slot_results = [random.randint(1, 9) for _ in range(3)]
     slot_display = " ".join([str(x) for x in slot_results])
     
@@ -105,10 +96,9 @@ async def handle_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"range_{range_id}")])
         
         message_text = (
-            f"🎰 Слот машина 🎰\n\n"
             f"🎰 {slot_display} 🎰\n\n"
-            f"🎉 ДЖЕКПОТ! 777! 🎉\n\n"
-            f"🎳 Началась мини-игра в боулинг!\n"
+            f"🎉 777! 🎉\n\n"
+            f"🎳 Мини-игра в боулинг!\n"
             f"💰 Приз на кону: <b>{user.current_prize}</b>\n\n"
             f"Выберите диапазон кедлей:"
         )
@@ -116,11 +106,7 @@ async def handle_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
     else:
         # No jackpot
-        message_text = (
-            f"🎰 Слот машина 🎰\n\n"
-            f"🎰 {slot_display} 🎰\n\n"
-            f"😢 Не повезло в этот раз..."
-        )
+        message_text = f"🎰 {slot_display} 🎰"
         await update.message.reply_text(message_text)
     
     db.close()
@@ -168,7 +154,7 @@ async def select_range(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # Уже на максимум (NFT)
             new_level = context.user_data['prize_level']
             new_prize = str(PRIZE_LEVELS[new_level])
-            level_message = f"🏆 Вы уже на максимальном уровне <b>NFT</b>!"
+            level_message = f"🏆 Максимум - <b>NFT</b>!"
     else:
         # Приз сгорает - ИГРА ЗАКАНЧИВАЕТСЯ
         new_level = 0
@@ -182,23 +168,15 @@ async def select_range(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Create result message with emojis
     result_emoji = "✅ ПОПАЛ!" if won else "❌ ПРОМАХ!"
     
-    pins_emoji = ""
-    for i in range(actual_pins):
-        pins_emoji += "🎳"
+    pins_emoji = "🎳" * actual_pins
     
     message_text = (
         f"{result_emoji}\n\n"
-        f"Вы выбрали: <b>🎳 {min_pins}-{max_pins}</b>\n"
-        f"Сбито кедлей: {pins_emoji} <b>({actual_pins})</b>\n\n"
-        f"{level_message}\n\n"
-        f"💰 Текущий приз: <b>{new_prize}</b>\n"
-        f"Всего побед: {user.total_wins}/{user.total_games}\n\n"
+        f"Выбор: <b>{min_pins}-{max_pins}</b>\n"
+        f"Результат: {pins_emoji} <b>({actual_pins})</b>\n\n"
+        f"{level_message}\n"
+        f"💰 Приз: <b>{new_prize}</b>"
     )
-    
-    if won:
-        message_text += "🎰 Напишите 🎰🎰 чтобы запустить слот машину снова!"
-    else:
-        message_text += "⛔ Приз сгорел! Игра закончена. Начните заново: 🎰🎰"
     
     await query.edit_message_text(message_text, parse_mode=ParseMode.HTML)
     db.close()
@@ -209,7 +187,7 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_slot_machine))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(select_range, pattern="^range_"))
     
     # Run the bot
