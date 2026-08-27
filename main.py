@@ -1,6 +1,6 @@
 """
 Telegram бот: слот-машина 🎰 с джекпотом 777 и мини-игрой в боулинг.
-Пользователь выбивает 777 на реальной слот-машине Telegram, затем играет в боулинг.
+Пользователь выбивает 777 на реальной слот-машине Telegram в ГРУППЕ, затем играет в боулинг.
 """
 
 import asyncio
@@ -12,13 +12,12 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ChatType
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
-    Dice,
 )
 from aiogram.filters import Command
 
@@ -69,7 +68,10 @@ def mention(user_id: int, name: str) -> str:
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    """Start command"""
+    """Start command - only in private chat"""
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    
     db = SessionLocal()
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
@@ -84,28 +86,25 @@ async def cmd_start(message: Message):
     welcome_text = (
         f"🎰 Добро пожаловать в Bowling Slot Bot!\n\n"
         f"Правила игры:\n"
-        f"1️⃣ Отправьте эмодзи 🎰 боту\n"
+        f"1️⃣ Напишите в группе 🎰 и крутите слот!\n"
         f"2️⃣ Если выбьете 777 - запускается мини-игра в боулинг!\n"
         f"3️⃣ Выберите диапазон кедлей и попробуйте угадать\n"
         f"4️⃣ Если попадете - приз повышается, если нет - приз сгорает!\n\n"
         f"💰 Призы: 15 → 40 → 75 → 100 → NFT\n\n"
-        f"Ваш текущий приз: <b>{user.current_prize}</b>\n\n"
-        f"👉 Отправьте /spin или просто 🎰 чтобы крутить слот!"
+        f"Ваш текущий приз: <b>{user.current_prize}</b>"
     )
     
     await message.reply(welcome_text)
     db.close()
 
 
-@dp.message(Command("spin"))
-async def cmd_spin(message: Message):
-    """Send dice emoji to spin slots"""
-    await message.reply_dice(emoji="🎰")
-
-
 @dp.message(F.dice)
 async def handle_dice(message: Message):
-    """Handle dice result"""
+    """Handle dice result from group only"""
+    # Работаем только в группах
+    if message.chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        return
+    
     if message.dice.emoji != "🎰":
         return
     
@@ -167,9 +166,6 @@ async def handle_dice(message: Message):
         )
         
         await message.reply(message_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    else:
-        # No jackpot
-        pass
     
     db.close()
 
